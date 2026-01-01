@@ -20,6 +20,13 @@ HEADERS = {
 TIMEOUT = 15
 
 # ===============================
+# トップページ（404対策・最小）
+# ===============================
+@app.get("/", response_class=HTMLResponse)
+def root():
+    return "<h1>Web Unblocker running</h1>"
+
+# ===============================
 # NodeUnblocker Client JS
 # ===============================
 UNBLOCKER_JS = r"""
@@ -51,7 +58,8 @@ UNBLOCKER_JS = r"""
   if (_fetch) {
     global.fetch = function (input, init) {
       if (typeof input === "string") input = fixUrl(input);
-      else if (input instanceof Request) input = new Request(fixUrl(input.url), input);
+      else if (input instanceof Request)
+        input = new Request(fixUrl(input.url), input);
       return _fetch.call(this, input, init);
     };
   }
@@ -135,20 +143,24 @@ def html_proxy(target: str):
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 # ===============================
-# raw proxy
+# raw proxy（URLデコードのみ追加）
 # ===============================
 @app.get("/proxy/{target:path}")
 def raw_proxy(target: str):
-    if not target.startswith(("http://", "https://")):
+    url = unquote(target)
+
+    if not url.startswith(("http://", "https://")):
         raise HTTPException(400, "Invalid URL")
 
-    r = requests.get(target, headers=HEADERS, timeout=TIMEOUT, stream=True)
+    r = requests.get(url, headers=HEADERS, timeout=TIMEOUT, stream=True)
 
     return Response(
         content=r.content,
         status_code=r.status_code,
         headers={
-            "Content-Type": r.headers.get("Content-Type", "application/octet-stream"),
+            "Content-Type": r.headers.get(
+                "Content-Type", "application/octet-stream"
+            ),
             "Cache-Control": "no-store",
         },
     )
