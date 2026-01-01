@@ -1,13 +1,29 @@
-(function () {
+(function (global) {
   "use strict";
 
-  const config = window.__UNBLOCKER_CONFIG__;
-  if (!config) return;
+  const config = global.__UNBLOCKER_CONFIG__;
+  if (!config || !config.prefix || !config.url) return;
 
+  const PREFIX = config.prefix;
+
+  // =====================
+  // fixUrl (core)
+  // =====================
   function fixUrl(urlStr) {
     try {
-      if (!urlStr) return urlStr;
-      if (urlStr.startsWith(config.prefix)) return urlStr;
+      if (!urlStr || typeof urlStr !== "string") return urlStr;
+
+      // already proxied
+      if (urlStr.startsWith(PREFIX)) return urlStr;
+
+      // ignore special schemes
+      if (
+        urlStr.startsWith("data:") ||
+        urlStr.startsWith("blob:") ||
+        urlStr.startsWith("about:")
+      ) {
+        return urlStr;
+      }
 
       const base = new URL(config.url);
       const url = new URL(urlStr, base);
@@ -16,8 +32,8 @@
         return urlStr;
       }
 
-      return config.prefix + url.href;
-    } catch {
+      return PREFIX + url.href;
+    } catch (e) {
       return urlStr;
     }
   }
@@ -25,81 +41,103 @@
   // =====================
   // fetch
   // =====================
-  if (window.fetch) {
-    const _fetch = window.fetch;
-    window.fetch = function (resource, init) {
-      if (resource && resource.url) {
-        resource = new Request(fixUrl(resource.url), resource);
-      } else {
-        resource = fixUrl(resource.toString());
-      }
-      return _fetch(resource, init);
+  if (global.fetch) {
+    const _fetch = global.fetch;
+    global.fetch = function (input, init) {
+      try {
+        if (typeof input === "string") {
+          input = fixUrl(input);
+        } else if (input instanceof Request) {
+          input = new Request(fixUrl(input.url), input);
+        }
+      } catch (_) {}
+      return _fetch.call(this, input, init);
     };
   }
 
   // =====================
   // XMLHttpRequest
   // =====================
-  if (window.XMLHttpRequest) {
-    const XHR = window.XMLHttpRequest;
-    window.XMLHttpRequest = function () {
+  if (global.XMLHttpRequest) {
+    const XHR = global.XMLHttpRequest;
+    global.XMLHttpRequest = function () {
       const xhr = new XHR();
-      const open = xhr.open;
-      xhr.open = function (method, url) {
-        return open.call(xhr, method, fixUrl(url));
+      const _open = xhr.open;
+      xhr.open = function (method, url, async, user, password) {
+        return _open.call(
+          xhr,
+          method,
+          fixUrl(url),
+          async !== undefined ? async : true,
+          user,
+          password
+        );
       };
       return xhr;
     };
   }
 
   // =====================
-  // createElement
+  // document.createElement
   // =====================
-  const _createElement = document.createElement.bind(document);
-  document.createElement = function (tagName, options) {
-    const el = _createElement(tagName, options);
+  if (document.createElement) {
+    const _createElement = document.createElement.bind(document);
+    document.createElement = function (tagName, options) {
+      const el = _createElement(tagName, options);
 
-    ["src", "href", "poster"].forEach(attr => {
-      Object.defineProperty(el, attr, {
-        set(value) {
-          delete el[attr];
-          el[attr] = fixUrl(value);
-        },
-        configurable: true
+      ["src", "href", "poster"].forEach((attr) => {
+        if (attr in el) {
+          let internalValue = "";
+          Object.defineProperty(el, attr, {
+            get() {
+              return internalValue;
+            },
+            set(value) {
+              internalValue = fixUrl(value);
+              el.setAttribute(attr, internalValue);
+            },
+            configurable: true,
+          });
+        }
       });
-    });
 
-    return el;
-  };
+      return el;
+    };
+  }
 
   // =====================
   // history API
   // =====================
-  if (history.pushState) {
-    const _push = history.pushState;
-    history.pushState = function (state, title, url) {
-      if (url) url = fixUrl(url);
-      return _push.call(history, state, title, url);
+  function wrapHistory(fnName) {
+    const original = history[fnName];
+    if (!original) return;
+    history[fnName] = function (state, title, url) {
+      if (url) {
+        url = fixUrl(url);
+        try {
+          config.url = new URL(url.replace(PREFIX, ""));
+        } catch (_) {}
+      }
+      return original.call(history, state, title, url);
     };
   }
 
-  if (history.replaceState) {
-    const _replace = history.replaceState;
-    history.replaceState = function (state, title, url) {
-      if (url) url = fixUrl(url);
-      return _replace.call(history, state, title, url);
-    };
-  }
+  wrapHistory("pushState");
+  wrapHistory("replaceState");
 
   // =====================
   // WebSocket
   // =====================
-  if (window.WebSocket) {
-    const WS = window.WebSocket;
-    window.WebSocket = function (url, protocols) {
-      if (typeof url === "string" && url.startsWith("ws")) {
-        url = fixUrl(url.replace(/^ws/, "http")).replace(/^http/, "ws");
-      }
+  if (global.WebSocket) {
+    const WS = global.WebSocket;
+    global.WebSocket = function (url, protocols) {
+      try {
+        if (typeof url === "string" && /^wss?:\/\//.test(url)) {
+          const httpUrl = url.replace(/^ws/, "http");
+          const proxied = fixUrl(httpUrl);
+          url = proxied.replace(/^http/, "ws");
+        }
+      } catch (_) {}
       return new WS(url, protocols);
     };
   }
@@ -107,7 +145,7 @@
   // =====================
   // MutationObserver
   // =====================
-  const observer = new MutationObserver(mutations => {
+  const observer = new MutationObserver((mutations) => {
     for (const m of mutations) {
       if (m.type === "attributes") {
         const attr = m.attributeName;
@@ -125,8 +163,8 @@
   observer.observe(document.documentElement, {
     subtree: true,
     attributes: true,
-    attributeFilter: ["src", "href", "poster"]
+    attributeFilter: ["src", "href", "poster"],
   });
 
-  console.log("[Web Unblocker] client initialized");
-})();
+  console.log("[Web Unblocker] NodeUnblocker client initialized");
+})(this);
