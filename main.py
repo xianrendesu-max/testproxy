@@ -1,11 +1,19 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, FileResponse
+from fastapi.staticfiles import StaticFiles
 import requests
 import gzip
 import brotli
 from urllib.parse import unquote, urlparse
+import os
 
 app = FastAPI()
+
+# ===============================
+# Static files（重要）
+# ===============================
+if os.path.isdir("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ===============================
 # 共通設定
@@ -20,53 +28,71 @@ HEADERS = {
 TIMEOUT = 15
 
 # ===============================
-# トップページ（404対策・最小）
+# トップページ（static/index.html）
 # ===============================
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 def root():
-    return "<h1>Web Unblocker running</h1>"
+    return FileResponse("static/index.html")
 
 # ===============================
-# NodeUnblocker Client JS
+# NodeUnblocker Client JS（完全修整）
 # ===============================
 UNBLOCKER_JS = r"""
 <script>
 (function (global) {
   "use strict";
 
+  const PREFIX = "/proxy/";
+
+  function getRealUrl() {
+    try {
+      const u = location.href;
+      if (u.includes("/htmlproxy/")) {
+        return decodeURIComponent(u.split("/htmlproxy/")[1]);
+      }
+      return u;
+    } catch {
+      return location.href;
+    }
+  }
+
   const config = {
-    prefix: "/proxy/",
-    url: location.href
+    prefix: PREFIX,
+    url: getRealUrl()
   };
 
   function fixUrl(urlStr) {
     try {
-      if (!urlStr || urlStr.startsWith(config.prefix)) return urlStr;
-      if (/^(data:|blob:|about:)/.test(urlStr)) return urlStr;
+      if (!urlStr || typeof urlStr !== "string") return urlStr;
+      if (urlStr.startsWith(PREFIX)) return urlStr;
+      if (/^(data:|blob:|about:|javascript:)/i.test(urlStr)) return urlStr;
 
       const base = new URL(config.url);
       const url = new URL(urlStr, base);
 
       if (!/^https?:$/.test(url.protocol)) return urlStr;
-      return config.prefix + url.href;
+
+      return PREFIX + encodeURIComponent(url.href);
     } catch {
       return urlStr;
     }
   }
 
-  const _fetch = global.fetch;
-  if (_fetch) {
+  if (global.fetch) {
+    const _fetch = global.fetch;
     global.fetch = function (input, init) {
-      if (typeof input === "string") input = fixUrl(input);
-      else if (input instanceof Request)
+      if (typeof input === "string") {
+        input = fixUrl(input);
+      } else if (input instanceof Request) {
         input = new Request(fixUrl(input.url), input);
+      }
       return _fetch.call(this, input, init);
     };
   }
 
   const _open = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function (m, u) {
-    return _open.call(this, m, fixUrl(u));
+  XMLHttpRequest.prototype.open = function (m, u, a, user, pass) {
+    return _open.call(this, m, fixUrl(u), a !== false, user, pass);
   };
 
   const _create = document.createElement.bind(document);
@@ -76,7 +102,8 @@ UNBLOCKER_JS = r"""
       if (attr in el) {
         Object.defineProperty(el, attr, {
           set(v) { el.setAttribute(attr, fixUrl(v)); },
-          get() { return el.getAttribute(attr); }
+          get() { return el.getAttribute(attr); },
+          configurable: true
         });
       }
     });
@@ -88,7 +115,7 @@ UNBLOCKER_JS = r"""
       if (m.type === "attributes") {
         const v = m.target.getAttribute(m.attributeName);
         const f = fixUrl(v);
-        if (v !== f) m.target.setAttribute(m.attributeName, f);
+        if (v && v !== f) m.target.setAttribute(m.attributeName, f);
       }
     });
   }).observe(document.documentElement, {
@@ -97,7 +124,7 @@ UNBLOCKER_JS = r"""
     attributeFilter: ["src", "href", "poster"]
   });
 
-  console.log("[Web Unblocker] ready");
+  console.log("[Web Unblocker] client ready");
 })(window);
 </script>
 """
@@ -133,17 +160,25 @@ def html_proxy(target: str):
     parsed = urlparse(url)
     base = f"{parsed.scheme}://{parsed.netloc}/"
 
-    inject = f"<base href='{base}'>{UNBLOCKER_JS}"
+    inject = f"<base href='{base}'>\n{UNBLOCKER_JS}"
 
-    if "<head>" in html:
-        html = html.replace("<head>", "<head>" + inject, 1)
+    if "<head" in html.lower():
+        idx = html.lower().find("<head")
+        end = html.find(">", idx) + 1
+        html = html[:end] + inject + html[end:]
     else:
         html = inject + html
 
-    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+    return HTMLResponse(
+        html,
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Type": "text/html; charset=utf-8"
+        }
+    )
 
 # ===============================
-# raw proxy（URLデコードのみ追加）
+# raw proxy
 # ===============================
 @app.get("/proxy/{target:path}")
 def raw_proxy(target: str):
@@ -152,7 +187,13 @@ def raw_proxy(target: str):
     if not url.startswith(("http://", "https://")):
         raise HTTPException(400, "Invalid URL")
 
-    r = requests.get(url, headers=HEADERS, timeout=TIMEOUT, stream=True)
+    r = requests.get(
+        url,
+        headers=HEADERS,
+        timeout=TIMEOUT,
+        stream=True,
+        allow_redirects=True
+    )
 
     return Response(
         content=r.content,
