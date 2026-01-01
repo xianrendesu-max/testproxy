@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Web Unblocker</title>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background: linear-gradient(135deg, #eef2f7, #f9fbfd);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #1f2937;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+
+    .container {
+      background: #ffffff;
+      padding: 36px 32px 32px;
+      border-radius: 14px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.08);
+      max-width: 520px;
+      width: 92%;
+      text-align: center;
+    }
+
+    h1 {
+      margin-bottom: 28px;
+      font-size: 2.2rem;
+      font-weight: 700;
+      color: #2563eb;
+      letter-spacing: 0.02em;
+    }
+
+    .options {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 22px;
+    }
+
+    .option {
+      flex: 1;
+      padding: 14px;
+      border-radius: 10px;
+      border: 2px solid #e5e7eb;
+      cursor: pointer;
+      font-weight: 600;
+      background: #f9fafb;
+      color: #374151;
+      transition: 0.2s;
+      user-select: none;
+    }
+
+    .option:hover {
+      background: #f1f5f9;
+    }
+
+    .option.active {
+      background: #2563eb;
+      border-color: #2563eb;
+      color: #ffffff;
+      box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35);
+    }
+
+    input {
+      width: 100%;
+      padding: 14px;
+      font-size: 1rem;
+      border-radius: 10px;
+      border: 2px solid #e5e7eb;
+      margin-bottom: 20px;
+      outline: none;
+    }
+
+    input:focus {
+      border-color: #2563eb;
+    }
+
+    button {
+      width: 100%;
+      padding: 14px;
+      font-size: 1.05rem;
+      font-weight: 700;
+      border-radius: 12px;
+      border: none;
+      background: linear-gradient(135deg, #2563eb, #3b82f6);
+      color: #ffffff;
+      cursor: pointer;
+      box-shadow: 0 10px 22px rgba(37, 99, 235, 0.35);
+    }
+
+    button:hover {
+      opacity: 0.95;
+    }
+
+    .warning {
+      margin-top: 18px;
+      font-size: 0.85rem;
+      color: #ef4444;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>Web Unblocker</h1>
+
+    <div class="options">
+      <div class="option active" id="htmlOption">HTMLプロキシ</div>
+      <div class="option" id="nodeOption">NodeUnblocker</div>
+    </div>
+
+    <input
+      type="text"
+      id="urlInput"
+      placeholder="例: https://www.youtube.com"
+      autocomplete="off"
+    />
+
+    <button id="goBtn">実行する</button>
+
+    <p class="warning">
+      ※ 高負荷サイト（YouTube等）は不安定になる場合があります
+    </p>
+  </div>
+
+  <script>
+    let mode = localStorage.getItem("unblocker_mode") || "html";
+
+    const htmlBtn = document.getElementById("htmlOption");
+    const nodeBtn = document.getElementById("nodeOption");
+    const input = document.getElementById("urlInput");
+    const goBtn = document.getElementById("goBtn");
+
+    function updateUI() {
+      if (mode === "html") {
+        htmlBtn.classList.add("active");
+        nodeBtn.classList.remove("active");
+      } else {
+        nodeBtn.classList.add("active");
+        htmlBtn.classList.remove("active");
+      }
+    }
+
+    updateUI();
+
+    htmlBtn.onclick = () => {
+      mode = "html";
+      localStorage.setItem("unblocker_mode", mode);
+      updateUI();
+    };
+
+    nodeBtn.onclick = () => {
+      mode = "node";
+      localStorage.setItem("unblocker_mode", mode);
+      updateUI();
+    };
+
+    function run() {
+      const url = input.value.trim();
+
+      if (!url) {
+        alert("URLを入力してください");
+        return;
+      }
+
+      if (!/^https?:\/\//i.test(url)) {
+        alert("http または https から始まるURLを入力してください");
+        return;
+      }
+
+      if (mode === "html") {
+        location.href = "/htmlproxy/" + encodeURIComponent(url);
+      } else {
+        location.href = "/proxy/" + encodeURIComponent(url);
+      }
+    }
+
+    goBtn.onclick = run;
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        run();
+      }
+    });
+  </script>
+</body>
+</html>
