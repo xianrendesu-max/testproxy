@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Web Unblocker</title>
+
   <style>
     body {
       margin: 0;
@@ -43,14 +44,14 @@
 
     .option {
       flex: 1;
-      padding: 14px 10px;
+      padding: 14px;
       border-radius: 10px;
       border: 2px solid #e5e7eb;
       cursor: pointer;
       font-weight: 600;
       background: #f9fafb;
       color: #374151;
-      transition: all 0.25s ease;
+      transition: 0.2s;
       user-select: none;
     }
 
@@ -65,26 +66,13 @@
       box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35);
     }
 
-    input[type="text"] {
+    input {
       width: 100%;
-      padding: 14px 14px;
+      padding: 14px;
       font-size: 1rem;
       border-radius: 10px;
       border: 2px solid #e5e7eb;
       margin-bottom: 20px;
-      background: #ffffff;
-      color: #111827;
-      outline: none;
-      transition: border-color 0.2s, box-shadow 0.2s;
-    }
-
-    input[type="text"]::placeholder {
-      color: #9ca3af;
-    }
-
-    input[type="text"]:focus {
-      border-color: #2563eb;
-      box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.15);
     }
 
     button {
@@ -97,105 +85,76 @@
       background: linear-gradient(135deg, #2563eb, #3b82f6);
       color: #ffffff;
       cursor: pointer;
-      transition: transform 0.15s ease, box-shadow 0.15s ease;
       box-shadow: 0 10px 22px rgba(37, 99, 235, 0.35);
-    }
-
-    button:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 14px 28px rgba(37, 99, 235, 0.45);
-    }
-
-    button:active {
-      transform: translateY(0);
-      box-shadow: 0 8px 16px rgba(37, 99, 235, 0.35);
     }
 
     .warning {
       margin-top: 18px;
       font-size: 0.85rem;
       color: #ef4444;
-      line-height: 1.5;
-    }
-
-    @media (max-width: 420px) {
-      h1 {
-        font-size: 1.9rem;
-      }
     }
   </style>
 </head>
+
 <body>
   <div class="container">
     <h1>Web Unblocker</h1>
 
     <div class="options">
-      <div class="option active" id="htmlProxyOption">HTMLプロキシ</div>
-      <div class="option" id="nodeUnblockerOption">NodeUnblocker改良版</div>
+      <div class="option active" id="htmlOption">HTMLプロキシ</div>
+      <div class="option" id="nodeOption">NodeUnblocker</div>
     </div>
 
     <input
       type="text"
-      id="targetUrl"
+      id="urlInput"
       placeholder="例: https://www.youtube.com"
     />
 
-    <button id="startButton">実行する</button>
+    <button id="goBtn">実行する</button>
 
     <p class="warning">
-      ※ Youtube の視聴はサーバー負荷が高くなり、不安定になる場合があります
+      ※ 高負荷サイト（YouTube等）は不安定になる場合があります
     </p>
   </div>
 
   <script>
-    let selectedMode = 'html';
+    let mode = "html";
 
-    const htmlProxyOption = document.getElementById('htmlProxyOption');
-    const nodeUnblockerOption = document.getElementById('nodeUnblockerOption');
+    const htmlBtn = document.getElementById("htmlOption");
+    const nodeBtn = document.getElementById("nodeOption");
+    const input = document.getElementById("urlInput");
 
-    htmlProxyOption.addEventListener('click', () => {
-      selectedMode = 'html';
-      htmlProxyOption.classList.add('active');
-      nodeUnblockerOption.classList.remove('active');
-    });
+    htmlBtn.onclick = () => {
+      mode = "html";
+      htmlBtn.classList.add("active");
+      nodeBtn.classList.remove("active");
+    };
 
-    nodeUnblockerOption.addEventListener('click', () => {
-      selectedMode = 'node';
-      nodeUnblockerOption.classList.add('active');
-      htmlProxyOption.classList.remove('active');
-    });
+    nodeBtn.onclick = () => {
+      mode = "node";
+      nodeBtn.classList.add("active");
+      htmlBtn.classList.remove("active");
+    };
 
-    document.getElementById('startButton').addEventListener('click', () => {
-      const url = document.getElementById('targetUrl').value;
+    document.getElementById("goBtn").onclick = () => {
+      const url = input.value.trim();
       if (!url) {
         alert("URLを入力してください");
         return;
       }
 
-      let endpoint = '';
-      if (selectedMode === 'html') {
-        endpoint = '/htmlproxy/' + encodeURIComponent(url);
-      } else {
-        endpoint = '/proxy/' + encodeURIComponent(url);
+      if (!/^https?:\/\//i.test(url)) {
+        alert("http または https から始まるURLを入力してください");
+        return;
       }
 
-      fetch(endpoint)
-        .then(response => {
-          if (!response.ok) {
-            throw new Error(`ネットワークエラー (${response.status})`);
-          }
-          return response.text();
-        })
-        .then(html => {
-          document.open();
-          document.write(html);
-          document.close();
-        })
-        .catch(error => {
-          console.error('エラー:', error);
-          alert('エラーが発生しました。コンソールをご確認ください。');
-        });
-    });
+      if (mode === "html") {
+        location.href = "/htmlproxy/" + encodeURIComponent(url);
+      } else {
+        location.href = "/proxy/" + url;
+      }
+    };
   </script>
 </body>
 </html>
