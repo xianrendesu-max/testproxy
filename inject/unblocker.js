@@ -2,9 +2,10 @@
   "use strict";
 
   const config = global.__UNBLOCKER_CONFIG__;
-  if (!config || !config.prefix || !config.url) return;
+  if (!config || !config.prefix || !config.originUrl) return;
 
   const PREFIX = config.prefix;
+  const ORIGIN = config.originUrl;
 
   // =====================
   // fixUrl (core)
@@ -25,15 +26,15 @@
         return urlStr;
       }
 
-      const base = new URL(config.url);
+      const base = new URL(ORIGIN);
       const url = new URL(urlStr, base);
 
-      if (url.protocol !== "http:" && url.protocol !== "https:") {
+      if (!["http:", "https:"].includes(url.protocol)) {
         return urlStr;
       }
 
-      return PREFIX + url.href;
-    } catch (e) {
+      return PREFIX + encodeURIComponent(url.href);
+    } catch (_) {
       return urlStr;
     }
   }
@@ -82,23 +83,26 @@
   // =====================
   if (document.createElement) {
     const _createElement = document.createElement.bind(document);
+
     document.createElement = function (tagName, options) {
       const el = _createElement(tagName, options);
 
       ["src", "href", "poster"].forEach((attr) => {
-        if (attr in el) {
-          let internalValue = "";
-          Object.defineProperty(el, attr, {
-            get() {
-              return internalValue;
-            },
-            set(value) {
-              internalValue = fixUrl(value);
-              el.setAttribute(attr, internalValue);
-            },
-            configurable: true,
-          });
-        }
+        if (!(attr in el)) return;
+
+        const desc = Object.getOwnPropertyDescriptor(
+          Object.getPrototypeOf(el),
+          attr
+        );
+        if (!desc || !desc.set) return;
+
+        Object.defineProperty(el, attr, {
+          get: desc.get ? desc.get.bind(el) : undefined,
+          set(value) {
+            desc.set.call(el, fixUrl(value));
+          },
+          configurable: true,
+        });
       });
 
       return el;
@@ -111,14 +115,21 @@
   function wrapHistory(fnName) {
     const original = history[fnName];
     if (!original) return;
+
     history[fnName] = function (state, title, url) {
       if (url) {
-        url = fixUrl(url);
+        const fixed = fixUrl(url);
         try {
-          config.url = new URL(url.replace(PREFIX, ""));
+          const decoded = decodeURIComponent(
+            fixed.startsWith(PREFIX)
+              ? fixed.slice(PREFIX.length)
+              : fixed
+          );
+          config.originUrl = decoded;
         } catch (_) {}
+        return original.call(history, state, title, fixed);
       }
-      return original.call(history, state, title, url);
+      return original.call(history, state, title);
     };
   }
 
@@ -147,15 +158,18 @@
   // =====================
   const observer = new MutationObserver((mutations) => {
     for (const m of mutations) {
-      if (m.type === "attributes") {
-        const attr = m.attributeName;
-        if (["src", "href", "poster"].includes(attr)) {
-          const val = m.target.getAttribute(attr);
-          const fixed = fixUrl(val);
-          if (val !== fixed) {
-            m.target.setAttribute(attr, fixed);
-          }
-        }
+      if (m.type !== "attributes") continue;
+
+      const attr = m.attributeName;
+      if (!["src", "href", "poster"].includes(attr)) continue;
+
+      const el = m.target;
+      const val = el.getAttribute(attr);
+      if (!val || val.startsWith(PREFIX)) continue;
+
+      const fixed = fixUrl(val);
+      if (fixed !== val) {
+        el.setAttribute(attr, fixed);
       }
     }
   });
