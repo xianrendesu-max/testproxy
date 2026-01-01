@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, Response
 import requests
 import gzip
 import brotli
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 app = FastAPI()
 
@@ -11,173 +11,144 @@ app = FastAPI()
 # 共通設定
 # ===============================
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     "Accept": "*/*",
-    "Accept-Encoding": "identity",  # ★ 超重要（gzip無効）
+    "Accept-Encoding": "identity",
     "Connection": "close",
 }
 
 TIMEOUT = 15
 
-
 # ===============================
-# Web Unblocker Client JS
+# NodeUnblocker Client JS
 # ===============================
 UNBLOCKER_JS = r"""
 <script>
-window.__UNBLOCKER_CONFIG__ = {
-  prefix: "/htmlproxy/",
-  url: location.href
-};
-(function () {
+(function (global) {
   "use strict";
 
-  const config = window.__UNBLOCKER_CONFIG__;
-  if (!config) return;
+  const config = {
+    prefix: "/proxy/",
+    url: location.href
+  };
 
   function fixUrl(urlStr) {
     try {
-      if (!urlStr) return urlStr;
-      if (urlStr.startsWith(config.prefix)) return urlStr;
+      if (!urlStr || urlStr.startsWith(config.prefix)) return urlStr;
+      if (/^(data:|blob:|about:)/.test(urlStr)) return urlStr;
 
       const base = new URL(config.url);
       const url = new URL(urlStr, base);
 
-      if (url.protocol !== "http:" && url.protocol !== "https:") {
-        return urlStr;
-      }
-      return config.prefix + encodeURIComponent(url.href);
+      if (!/^https?:$/.test(url.protocol)) return urlStr;
+      return config.prefix + url.href;
     } catch {
       return urlStr;
     }
   }
 
-  if (window.fetch) {
-    const _fetch = window.fetch;
-    window.fetch = function (resource, init) {
-      if (resource && resource.url) {
-        resource = new Request(fixUrl(resource.url), resource);
-      } else {
-        resource = fixUrl(resource.toString());
-      }
-      return _fetch(resource, init);
+  const _fetch = global.fetch;
+  if (_fetch) {
+    global.fetch = function (input, init) {
+      if (typeof input === "string") input = fixUrl(input);
+      else if (input instanceof Request) input = new Request(fixUrl(input.url), input);
+      return _fetch.call(this, input, init);
     };
   }
 
-  if (window.XMLHttpRequest) {
-    const XHR = window.XMLHttpRequest;
-    window.XMLHttpRequest = function () {
-      const xhr = new XHR();
-      const open = xhr.open;
-      xhr.open = function (method, url) {
-        return open.call(xhr, method, fixUrl(url));
-      };
-      return xhr;
-    };
-  }
+  const _open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (m, u) {
+    return _open.call(this, m, fixUrl(u));
+  };
 
-  const _createElement = document.createElement.bind(document);
-  document.createElement = function (tagName, options) {
-    const el = _createElement(tagName, options);
+  const _create = document.createElement.bind(document);
+  document.createElement = function (tag) {
+    const el = _create(tag);
     ["src", "href", "poster"].forEach(attr => {
-      Object.defineProperty(el, attr, {
-        set(value) {
-          el.setAttribute(attr, fixUrl(value));
-        }
-      });
+      if (attr in el) {
+        Object.defineProperty(el, attr, {
+          set(v) { el.setAttribute(attr, fixUrl(v)); },
+          get() { return el.getAttribute(attr); }
+        });
+      }
     });
     return el;
   };
 
-})();
+  new MutationObserver(muts => {
+    muts.forEach(m => {
+      if (m.type === "attributes") {
+        const v = m.target.getAttribute(m.attributeName);
+        const f = fixUrl(v);
+        if (v !== f) m.target.setAttribute(m.attributeName, f);
+      }
+    });
+  }).observe(document.documentElement, {
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["src", "href", "poster"]
+  });
+
+  console.log("[Web Unblocker] ready");
+})(window);
 </script>
 """
 
-
 # ===============================
-# ヘルパー：レスポンス展開
+# decode helper
 # ===============================
 def decode_response(resp: requests.Response) -> str:
     raw = resp.content
-    encoding = resp.headers.get("Content-Encoding", "")
-
+    enc = resp.headers.get("Content-Encoding", "")
     try:
-        if encoding == "gzip":
+        if enc == "gzip":
             raw = gzip.decompress(raw)
-        elif encoding == "br":
+        elif enc == "br":
             raw = brotli.decompress(raw)
-    except Exception:
+    except:
         pass
-
     return raw.decode("utf-8", errors="ignore")
 
-
 # ===============================
-# HTML プロキシ
+# HTML proxy
 # ===============================
 @app.get("/htmlproxy/{target:path}")
 def html_proxy(target: str):
-    try:
-        url = requests.utils.unquote(target)
+    url = unquote(target)
 
-        if not url.startswith(("http://", "https://")):
-            raise HTTPException(status_code=400, detail="Invalid URL")
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "Invalid URL")
 
-        r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-        html = decode_response(r)
+    r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+    html = decode_response(r)
 
-        parsed = urlparse(url)
-        base = f"{parsed.scheme}://{parsed.netloc}"
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}/"
 
-        # baseタグとJSを注入
-        inject = f"""
-<base href="{base}/">
-{UNBLOCKER_JS}
-"""
+    inject = f"<base href='{base}'>{UNBLOCKER_JS}"
 
-        if "<head>" in html:
-            html = html.replace("<head>", "<head>" + inject, 1)
-        else:
-            html = inject + html
+    if "<head>" in html:
+        html = html.replace("<head>", "<head>" + inject, 1)
+    else:
+        html = inject + html
 
-        return HTMLResponse(
-            content=html,
-            status_code=200,
-            headers={
-                "Content-Type": "text/html; charset=utf-8",
-                "Cache-Control": "no-store"
-            }
-        )
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 # ===============================
-# 通常プロキシ（HTML以外）
+# raw proxy
 # ===============================
 @app.get("/proxy/{target:path}")
 def raw_proxy(target: str):
-    try:
-        url = requests.utils.unquote(target)
+    if not target.startswith(("http://", "https://")):
+        raise HTTPException(400, "Invalid URL")
 
-        if not url.startswith(("http://", "https://")):
-            raise HTTPException(status_code=400, detail="Invalid URL")
+    r = requests.get(target, headers=HEADERS, timeout=TIMEOUT, stream=True)
 
-        r = requests.get(url, headers=HEADERS, timeout=TIMEOUT, stream=True)
-
-        return Response(
-            content=r.content,
-            status_code=r.status_code,
-            headers={
-                "Content-Type": r.headers.get("Content-Type", "application/octet-stream"),
-                "Cache-Control": "no-store"
-            }
-        )
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return Response(
+        content=r.content,
+        status_code=r.status_code,
+        headers={
+            "Content-Type": r.headers.get("Content-Type", "application/octet-stream"),
+            "Cache-Control": "no-store",
+        },
+    )
