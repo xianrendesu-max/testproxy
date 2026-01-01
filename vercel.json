@@ -2,22 +2,12 @@
   "version": 2,
   "builds": [
     {
-      "src": "main.py",
+      "src": "app.py",
       "use": "@vercel/python"
     }
   ],
   "routes": [
-    {
-      "src": "/static/(.*)",
-      "dest": "/static/$1"
-    },
-    {
-      "src": "/inject/(.*)",
-      "dest": "/inject/$1"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "main.py"
-    }
+    { "src": "/static/(.*)", "dest": "/static/$1" },
+    { "src": "/(.*)", "dest": "app.py" }
   ]
 }
