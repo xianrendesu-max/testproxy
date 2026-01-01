@@ -2,9 +2,8 @@ from fastapi import FastAPI, HTTPException, Form
 from fastapi.responses import HTMLResponse, Response, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 import requests
-import gzip
-import brotli
-from urllib.parse import unquote, urlparse, quote
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse, quote, unquote
 
 app = FastAPI()
 
@@ -13,168 +12,149 @@ app = FastAPI()
 # ===============================
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# ===============================
-# 共通設定
-# ===============================
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    "Accept": "*/*",
-    "Accept-Encoding": "identity",
-    "Connection": "close",
-}
-
-TIMEOUT = 15
-
-# ===============================
-# トップページ
-# ===============================
 @app.get("/")
 def root():
     return FileResponse("static/index.html")
 
 # ===============================
-# 実行処理（完全サーバー処理）
+# 共通設定
 # ===============================
-@app.post("/go")
-def go(url: str = Form(...), mode: str = Form(...)):
-    url = url.strip()
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "*/*",
+}
 
-    # https:// 補正
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-
-    if not url.startswith(("http://", "https://")):
-        raise HTTPException(400, "Invalid URL")
-
-    if mode == "nodeunblocker":
-        return RedirectResponse(
-            url="/htmlproxy/" + quote(url, safe=""),
-            status_code=302
-        )
-
-    raise HTTPException(400, "Invalid mode")
+TIMEOUT = 15
+PROXY_PREFIX = "/proxy/"
 
 # ===============================
-# NodeUnblocker Client JS
+# NodeUnblocker 的 fixUrl（Python版）
 # ===============================
-UNBLOCKER_JS = r"""
-<script>
-(function () {
-  "use strict";
-  const PREFIX = "/proxy/";
+def fix_url(raw_url: str, base_url: str) -> str:
+    if not raw_url:
+        return raw_url
 
-  function realUrl() {
-    const u = location.href;
-    if (u.includes("/htmlproxy/")) {
-      return decodeURIComponent(u.split("/htmlproxy/")[1]);
-    }
-    return u;
-  }
+    raw_url = raw_url.strip()
 
-  const baseUrl = realUrl();
+    # 既に proxy 済み
+    if raw_url.startswith(PROXY_PREFIX):
+        return raw_url
 
-  function fix(u) {
-    try {
-      if (!u) return u;
-      if (/^(data:|blob:|about:|javascript:)/i.test(u)) return u;
-      if (u.startsWith(PREFIX)) return u;
+    # data: / about: / javascript:
+    if raw_url.startswith(("data:", "about:", "javascript:", "blob:")):
+        return raw_url
 
-      const abs = new URL(u, baseUrl);
-      if (!/^https?:$/.test(abs.protocol)) return u;
-
-      return PREFIX + encodeURIComponent(abs.href);
-    } catch {
-      return u;
-    }
-  }
-
-  const _fetch = window.fetch;
-  if (_fetch) {
-    window.fetch = function (i, o) {
-      if (typeof i === "string") i = fix(i);
-      else if (i instanceof Request) i = new Request(fix(i.url), i);
-      return _fetch.call(this, i, o);
-    };
-  }
-
-  const _open = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function (m, u, ...r) {
-    return _open.call(this, m, fix(u), ...r);
-  };
-
-  new MutationObserver(ms => {
-    ms.forEach(m => {
-      const v = m.target.getAttribute?.(m.attributeName);
-      const f = fix(v);
-      if (v && v !== f) m.target.setAttribute(m.attributeName, f);
-    });
-  }).observe(document.documentElement, {
-    subtree: true,
-    attributes: true,
-    attributeFilter: ["src", "href", "poster"]
-  });
-
-  console.log("[Web Unblocker] client ready");
-})();
-</script>
-"""
-
-# ===============================
-# decode helper
-# ===============================
-def decode_response(resp: requests.Response) -> str:
-    raw = resp.content
-    enc = resp.headers.get("Content-Encoding", "")
     try:
-        if enc == "gzip":
-            raw = gzip.decompress(raw)
-        elif enc == "br":
-            raw = brotli.decompress(raw)
-    except:
-        pass
-    return raw.decode("utf-8", errors="ignore")
+        abs_url = urljoin(base_url, raw_url)
+        parsed = urlparse(abs_url)
+
+        if parsed.scheme not in ("http", "https"):
+            return raw_url
+
+        return PROXY_PREFIX + quote(abs_url, safe="")
+    except Exception:
+        return raw_url
 
 # ===============================
-# HTML proxy
+# HTML Proxy（サーバー主導）
 # ===============================
 @app.get("/htmlproxy/{target:path}")
 def html_proxy(target: str):
     url = unquote(target)
 
     if not url.startswith(("http://", "https://")):
-        raise HTTPException(400, "Invalid URL")
+        raise HTTPException(status_code=400, detail="Invalid URL")
 
     r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-    html = decode_response(r)
+    content_type = r.headers.get("Content-Type", "")
 
-    parsed = urlparse(url)
-    base = f"{parsed.scheme}://{parsed.netloc}/"
-    inject = f"<base href='{base}'>\n{UNBLOCKER_JS}"
+    if "text/html" not in content_type:
+        # HTML 以外は raw proxy へ
+        return RedirectResponse(PROXY_PREFIX + quote(url, safe=""))
 
-    if "<head>" in html.lower():
-        html = html.replace("<head>", "<head>" + inject, 1)
-    else:
-        html = inject + html
+    soup = BeautifulSoup(r.text, "html.parser")
 
-    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+    # base URL（NodeUnblocker の currentRemoteHref 相当）
+    base_url = url
+
+    # <base> を強制挿入
+    if soup.head:
+        base_tag = soup.new_tag("base", href=base_url)
+        soup.head.insert(0, base_tag)
+
+    # 書き換え対象タグ
+    TARGET_ATTRS = {
+        "a": ["href"],
+        "img": ["src", "srcset"],
+        "script": ["src"],
+        "link": ["href"],
+        "iframe": ["src"],
+        "video": ["src", "poster"],
+        "source": ["src"],
+        "audio": ["src"],
+        "form": ["action"],
+    }
+
+    for tag, attrs in TARGET_ATTRS.items():
+        for el in soup.find_all(tag):
+            for attr in attrs:
+                if el.has_attr(attr):
+                    if attr == "srcset":
+                        # srcset はカンマ区切り
+                        parts = []
+                        for part in el[attr].split(","):
+                            u = part.strip().split(" ")[0]
+                            rest = part.strip()[len(u):]
+                            fixed = fix_url(u, base_url)
+                            parts.append(fixed + rest)
+                        el[attr] = ", ".join(parts)
+                    else:
+                        el[attr] = fix_url(el[attr], base_url)
+
+    # meta refresh 対策
+    for meta in soup.find_all("meta"):
+        if meta.get("http-equiv", "").lower() == "refresh":
+            content = meta.get("content", "")
+            if "url=" in content.lower():
+                delay, u = content.split(";", 1)
+                real_url = u.split("=", 1)[1]
+                meta["content"] = f"{delay};url={fix_url(real_url, base_url)}"
+
+    return HTMLResponse(
+        str(soup),
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Type": "text/html; charset=utf-8",
+        },
+    )
 
 # ===============================
-# raw proxy
+# Raw Proxy（fetch / img / js / css / video）
 # ===============================
 @app.get("/proxy/{target:path}")
 def raw_proxy(target: str):
     url = unquote(target)
 
     if not url.startswith(("http://", "https://")):
-        raise HTTPException(400, "Invalid URL")
+        raise HTTPException(status_code=400, detail="Invalid URL")
 
-    r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+    r = requests.get(
+        url,
+        headers=HEADERS,
+        timeout=TIMEOUT,
+        stream=True,
+        allow_redirects=True,
+    )
+
+    headers = {}
+    for h in ("Content-Type", "Cache-Control"):
+        if h in r.headers:
+            headers[h] = r.headers[h]
+
+    headers["Cache-Control"] = "no-store"
 
     return Response(
         content=r.content,
         status_code=r.status_code,
-        headers={
-            "Content-Type": r.headers.get("Content-Type", "application/octet-stream"),
-            "Cache-Control": "no-store",
-        },
-        )
+        headers=headers,
+                            )
